@@ -134,6 +134,7 @@ class StockDatabase:
         conn = self.get_connection()
         cursor = conn.cursor()
         
+        # Whitelist of valid sort options - prevents SQL injection
         valid_sorts = {
             "id": "id DESC",
             "name": "stock_name ASC",
@@ -144,8 +145,10 @@ class StockDatabase:
             "reviewed": "last_reviewed_date ASC"
         }
         
+        # Default to "id DESC" if invalid sort_by provided
         order_clause = valid_sorts.get(sort_by, "id DESC")
         
+        # Safe: order_clause comes from whitelist only, not user input
         cursor.execute(f"SELECT * FROM stocks ORDER BY {order_clause}")
         stocks = cursor.fetchall()
         

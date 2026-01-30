@@ -55,8 +55,8 @@ class StockDataFetcher:
                     if hasattr(date, 'strftime'):
                         return date.strftime('%Y-%m-%d')
                     return str(date)
-        except Exception:
-            pass
+        except (KeyError, IndexError, AttributeError, TypeError) as e:
+            print(f"Error formatting earnings date: {e}")
         return None
     
     @staticmethod

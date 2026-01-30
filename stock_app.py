@@ -11,6 +11,10 @@ from PIL import Image, ImageTk
 from database import StockDatabase
 from stock_data import StockDataFetcher
 
+# Constants
+REVIEW_ALERT_DAYS = 30  # Days before review alert
+EARNINGS_ALERT_DAYS = 7  # Days before earnings alert
+
 # Position status options
 POSITION_STATUSES = [
     "INCREASE",
@@ -216,7 +220,7 @@ class StockApp:
                     reviewed_str = "Yesterday"
                 else:
                     reviewed_str = f"{days_ago} days ago"
-            except:
+            except (ValueError, TypeError):
                 reviewed_str = "Unknown"
             
             values = (
@@ -297,11 +301,18 @@ class StockApp:
             ticker = ticker_var.get().strip().upper()
             if ticker:
                 info = self.fetcher.get_stock_info(ticker)
-                if info['name'] and info['name'] != ticker:
+                data_fetched = False
+                if info.get('name') and info['name'] != ticker:
                     name_var.set(info['name'])
-                if info['current_price']:
+                    data_fetched = True
+                if info.get('current_price'):
                     current_value_var.set(f"{info['current_price']:.2f}")
-                messagebox.showinfo("Info", f"Fetched data for {ticker}")
+                    data_fetched = True
+                
+                if data_fetched:
+                    messagebox.showinfo("Success", f"Fetched data for {ticker}")
+                else:
+                    messagebox.showwarning("No Data", f"Could not fetch data for {ticker}. Check ticker or network connection.")
         
         ttk.Button(form_frame, text="Fetch Info", command=fetch_stock_info).grid(row=row, column=2, padx=5)
         row += 1
@@ -340,7 +351,7 @@ class StockApp:
         earnings_var = tk.StringVar(value=stock['earnings_date'] if stock and stock['earnings_date'] else "")
         earnings_entry = ttk.Entry(form_frame, textvariable=earnings_var, width=40)
         earnings_entry.grid(row=row, column=1, sticky=(tk.W, tk.E), pady=5)
-        ttk.Label(form_frame, text="(YYYY-MM-DD)", font=('Arial', 8)).grid(row=row, column=2, sticky=tk.W)
+        ttk.Label(form_frame, text="(YYYY-MM-DD or blank)", font=('Arial', 8)).grid(row=row, column=2, sticky=tk.W)
         row += 1
         
         # Notes
@@ -365,8 +376,12 @@ class StockApp:
                 filetypes=[("Image files", "*.png *.jpg *.jpeg *.gif *.bmp"), ("All files", "*.*")]
             )
             if filepath:
-                self.selected_image_path = filepath
-                image_label_var.set(os.path.basename(filepath))
+                # Validate that file exists and is readable
+                if os.path.isfile(filepath) and os.access(filepath, os.R_OK):
+                    self.selected_image_path = filepath
+                    image_label_var.set(os.path.basename(filepath))
+                else:
+                    messagebox.showerror("Error", "Cannot read selected file.")
         
         ttk.Button(form_frame, text="Select Image", command=select_image).grid(row=row, column=2, padx=5)
         row += 1
@@ -385,7 +400,15 @@ class StockApp:
                 amount = int(amount_var.get())
                 position_status = status_var.get()
                 notes = notes_text.get("1.0", tk.END).strip()
-                earnings_date = earnings_var.get().strip() or None
+                earnings_date_str = earnings_var.get().strip() or None
+                
+                # Validate earnings date format if provided
+                if earnings_date_str:
+                    try:
+                        datetime.strptime(earnings_date_str, '%Y-%m-%d')
+                    except ValueError:
+                        messagebox.showerror("Error", "Earnings date must be in YYYY-MM-DD format.")
+                        return
                 
                 current_value = None
                 if current_value_var.get().strip():
@@ -395,10 +418,15 @@ class StockApp:
                     messagebox.showerror("Error", "Stock name and ticker are required.")
                     return
                 
-                # Handle image
+                # Handle image - validate and copy safely
                 image_path = ""
                 if self.selected_image_path:
-                    # Copy image to images directory
+                    # Validate image path
+                    if not os.path.isfile(self.selected_image_path):
+                        messagebox.showerror("Error", "Selected image file not found.")
+                        return
+                    
+                    # Copy image to images directory with safe filename
                     filename = f"{ticker}_{datetime.now().strftime('%Y%m%d_%H%M%S')}{os.path.splitext(self.selected_image_path)[1]}"
                     dest_path = os.path.join(self.images_dir, filename)
                     shutil.copy2(self.selected_image_path, dest_path)
@@ -406,7 +434,7 @@ class StockApp:
                 
                 if mode == "add":
                     self.db.add_stock(stock_name, ticker, price_paid, amount, 
-                                     position_status, notes, image_path, current_value, earnings_date)
+                                     position_status, notes, image_path, current_value, earnings_date_str)
                     messagebox.showinfo("Success", "Stock added successfully!")
                 else:
                     stock_id = stock['id']
@@ -415,7 +443,7 @@ class StockApp:
                         image_path = stock['image_path']
                     self.db.update_stock(stock_id, stock_name, ticker, price_paid, 
                                         amount, position_status, notes, image_path, 
-                                        current_value, earnings_date)
+                                        current_value, earnings_date_str)
                     messagebox.showinfo("Success", "Stock updated successfully!")
                 
                 self.refresh_stock_list()
@@ -594,8 +622,8 @@ class StockApp:
                 last_reviewed = datetime.fromisoformat(stock['last_reviewed_date'])
                 days_since_review = (today - last_reviewed).days
                 
-                # Alert if not reviewed in 30 days
-                if days_since_review >= 30:
+                # Alert if not reviewed in configured days
+                if days_since_review >= REVIEW_ALERT_DAYS:
                     alerts.append(f"• {stock['ticker']} ({stock['stock_name']}) - Not reviewed for {days_since_review} days")
                 
                 # Check for upcoming earnings
@@ -603,16 +631,18 @@ class StockApp:
                     try:
                         earnings_date = datetime.strptime(stock['earnings_date'], '%Y-%m-%d')
                         days_until_earnings = (earnings_date - today).days
-                        if 0 <= days_until_earnings <= 7:
+                        if 0 <= days_until_earnings <= EARNINGS_ALERT_DAYS:
                             alerts.append(f"• {stock['ticker']} - Earnings in {days_until_earnings} days ({stock['earnings_date']})")
-                    except:
+                    except ValueError:
+                        # Invalid date format in database, skip
                         pass
                 
                 # Check for investigation required status
                 if stock['position_status'] == "INVESTIGATION REQUIRED":
                     alerts.append(f"• {stock['ticker']} - Investigation Required")
             
-            except:
+            except (ValueError, TypeError):
+                # Skip stocks with invalid data
                 pass
         
         if alerts:
